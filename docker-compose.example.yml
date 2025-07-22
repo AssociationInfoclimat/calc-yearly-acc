@@ -1,0 +1,6 @@
+services:
+  calc_yearly_acc:
+    build: .
+    container_name: calc_yearly_acc
+    volumes:
+      - ./data:/media/datastore
