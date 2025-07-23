@@ -7,5 +7,12 @@ __pycache__
 *.log
 *.out
 
+.env
+.env.*
+!.env.example
+
+docker-compose.*
+!docker-compose.example.yml
+
 data/
 data-samples/
