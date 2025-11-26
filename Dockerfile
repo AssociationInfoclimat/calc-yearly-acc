@@ -17,4 +17,4 @@ COPY . /app
 RUN poetry config virtualenvs.in-project true \
     && poetry install --no-interaction --no-ansi --only main
 
-CMD ["poetry", "run", "python", "/app/calc_yearly_acc/calc_yearly_acc.py"]
+CMD ["poetry", "run", "python", "/app/calc_yearly_acc/calc_yearly_acc.py", "latest"]
