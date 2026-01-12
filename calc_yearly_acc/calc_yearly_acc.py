@@ -116,11 +116,18 @@ class CalcYearlyAcc:
 
         self.acc_beg_year = np.zeros((self.YPTS, self.XPTS), dtype=np.uint32)
         self.nb_valid_values = np.zeros((self.YPTS, self.XPTS), dtype=np.uint32)
-        nb_days_year = 365 + calendar.isleap(now.year)
+
+        year_to_compute = now.year
+        if len(sys.argv) >= 2:
+            arg = sys.argv[1]
+            if arg != "latest" and arg.isdigit() and len(arg) == 4:
+                year_to_compute = int(arg)
+
+        nb_days_year = 365 + calendar.isleap(year_to_compute)
 
         # 01:00 le 1er jour de l'année Y
         first_file_of_the_year_datetime = datetime.datetime(
-            year=now.year,
+            year=year_to_compute,
             month=1,
             day=1,
             hour=1,
@@ -132,7 +139,7 @@ class CalcYearlyAcc:
         start = first_file_of_the_year_datetime
         # 00:00 le 1er jour de l'année Y+1
         last_file_of_the_year_datetime = datetime.datetime(
-            year=now.year + 1,
+            year=year_to_compute + 1,
             month=1,
             day=1,
             hour=0,
@@ -140,7 +147,7 @@ class CalcYearlyAcc:
             second=0,
             tzinfo=datetime.UTC,
         )
-        now = datetime.datetime.now(datetime.UTC)
+
         end = min(last_file_of_the_year_datetime, now)
 
         if len(sys.argv) >= 2 and sys.argv[1] == "latest":
