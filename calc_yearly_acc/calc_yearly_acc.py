@@ -1,12 +1,34 @@
-from osgeo import gdal
-import numpy as np
-import datetime
 import calendar
+import datetime
+import logging
 import os
 import sys
 
+import numpy as np
+from osgeo import gdal  # type: ignore
+
 MEDIA_FS = "/media/datastore"
 TILES_PATH = MEDIA_FS + "/tempsreel.infoclimat.net/tiles"
+
+# Logging configuration (minimal, only configure when module executed as script)
+LOG_FORMAT = "%(asctime)s %(levelname)s %(name)s: %(message)s"
+LOG_DATEFMT = "%Y-%m-%d %H:%M:%S"
+LOGGER = logging.getLogger(__name__)
+
+
+def configure_logging(level: int = logging.INFO) -> None:
+    """Configure logging with reasonable defaults.
+
+    This function is intentionally not called at import time to avoid changing
+    behavior for callers that import this module. Call it when executing as a
+    script if logs are desired.
+    """
+    logging.basicConfig(
+        level=level,
+        format=LOG_FORMAT,
+        datefmt=LOG_DATEFMT,
+    )
+    LOGGER.setLevel(level)
 
 
 class CalcYearlyAcc:
@@ -21,23 +43,29 @@ class CalcYearlyAcc:
     def datetime_to_filename(self, dt: datetime.datetime, key: str = "ac_yearly_radaricval") -> str:
         return f"{self.FILE_DIR}/{dt.year:04d}/{dt.month:02d}/{dt.day:02d}/{key}_{dt.hour:02d}_v{dt.minute:02d}.tif"
 
+    def now(self) -> datetime.datetime:
+        return datetime.datetime.now(datetime.UTC)
+
     def generate_yearly_accumulation_at_datetime(
         self,
         total_count: float,
         dh: datetime.datetime,
         end: datetime.datetime,
     ) -> None:
+        out_file = self.datetime_to_filename(dh, "ac_yearly_radaricval")
+        LOGGER.info(f"Creating accumulation file: {out_file}")
+
         fn = self.datetime_to_filename(dh, "ac60radaric")
 
         processed_until_now = (end - dh) / datetime.timedelta(hours=1)
         percent = (total_count - processed_until_now) / float(total_count) * 100.0
-        print(f"[{percent:05.2f}%] {fn}")
+        LOGGER.info(f"[{percent:05.2f}%] processing file {fn}")
         if not os.path.isfile(fn):
-            print(f" >> NOT FOUND : '{fn}'")
+            LOGGER.warning(f"File not found: '{fn}'\n")
             return
         h = gdal.Open(fn, gdal.GA_ReadOnly)
         if h is None:
-            print(f" >> NOT OPENED : '{fn}'")
+            LOGGER.error(f"Failed to open file: '{fn}'\n")
             return
 
         # on remplace les NaN par des 0.0
@@ -56,9 +84,8 @@ class CalcYearlyAcc:
         del rr1h
 
         # write accumulation
-        outFile = self.datetime_to_filename(dh, "ac_yearly_radaricval")
         dst_ds = gdal.GetDriverByName("GTiff").Create(
-            outFile,
+            out_file,
             self.XPTS,
             self.YPTS,
             2,
@@ -72,10 +99,11 @@ class CalcYearlyAcc:
         dst_ds.SetGeoTransform(self.GEOT)
         dst_ds.SetProjection(self.PROJ)
         del dst_ds  # force writing to disk
-        print(" >> OK")
+
+        LOGGER.info(f"Wrote accumulation file: {out_file}\n")
 
     def execute(self) -> None:
-        YEAR = datetime.datetime.now(datetime.UTC).year
+        now = self.now()
 
         template_handler = gdal.Open(self.FILE_TEMPLATE, gdal.GA_ReadOnly)
         self.XPTS = template_handler.RasterXSize
@@ -88,11 +116,11 @@ class CalcYearlyAcc:
 
         self.acc_beg_year = np.zeros((self.YPTS, self.XPTS), dtype=np.uint32)
         self.nb_valid_values = np.zeros((self.YPTS, self.XPTS), dtype=np.uint32)
-        nb_days_year = 365 + calendar.isleap(YEAR)
+        nb_days_year = 365 + calendar.isleap(now.year)
 
         # 01:00 le 1er jour de l'année Y
-        start = datetime.datetime(
-            year=YEAR,
+        first_file_of_the_year_datetime = datetime.datetime(
+            year=now.year,
             month=1,
             day=1,
             hour=1,
@@ -100,9 +128,11 @@ class CalcYearlyAcc:
             second=0,
             tzinfo=datetime.UTC,
         )
+
+        start = first_file_of_the_year_datetime
         # 00:00 le 1er jour de l'année Y+1
-        end = datetime.datetime(
-            year=YEAR + 1,
+        last_file_of_the_year_datetime = datetime.datetime(
+            year=now.year + 1,
             month=1,
             day=1,
             hour=0,
@@ -111,11 +141,12 @@ class CalcYearlyAcc:
             tzinfo=datetime.UTC,
         )
         now = datetime.datetime.now(datetime.UTC)
+        end = min(last_file_of_the_year_datetime, now)
 
         if len(sys.argv) >= 2 and sys.argv[1] == "latest":
             # take last file from yesterday
-            print("Finding last accumulation file...")
-            min_hourly = datetime.datetime.now(datetime.UTC).replace(
+            LOGGER.info("Finding last accumulation file...")
+            min_hourly = now.replace(
                 minute=0,
                 second=0,
                 microsecond=0,
@@ -128,27 +159,38 @@ class CalcYearlyAcc:
             ):
                 tmp_dt -= datetime.timedelta(hours=1)
 
-            begin_file = self.datetime_to_filename(tmp_dt, "ac_yearly_radaricval")
-            print(f"Recovering from {begin_file}")
+            if tmp_dt < first_file_of_the_year_datetime:
+                LOGGER.info(f"No accumulation file found for current year, starting from scratch.")
+            else:
+                begin_file = self.datetime_to_filename(tmp_dt, "ac_yearly_radaricval")
+                LOGGER.info(f"Recovering from {begin_file}")
 
-            # on remplace le cumul de départ
-            fh_tmp = gdal.Open(begin_file, gdal.GA_ReadOnly)
-            # bande 1 = accumulation
-            self.acc_beg_year = fh_tmp.GetRasterBand(1).ReadAsArray(0, 0, self.XPTS, self.YPTS)
-            # bande 2 = nb de valeurs valides
-            self.nb_valid_values = fh_tmp.GetRasterBand(2).ReadAsArray(0, 0, self.XPTS, self.YPTS)
+                # on remplace le cumul de départ
+                fh_tmp = gdal.Open(begin_file, gdal.GA_ReadOnly)
+                # bande 1 = accumulation
+                self.acc_beg_year = fh_tmp.GetRasterBand(1).ReadAsArray(0, 0, self.XPTS, self.YPTS)
+                # bande 2 = nb de valeurs valides
+                self.nb_valid_values = fh_tmp.GetRasterBand(2).ReadAsArray(
+                    0, 0, self.XPTS, self.YPTS
+                )
 
-            # on remplace le datetime de début pour commencer à l'heure suivante
-            start = tmp_dt + datetime.timedelta(hours=1)
+                # on remplace le datetime de début pour commencer à l'heure suivante
+                start = tmp_dt + datetime.timedelta(hours=1)
 
         total_count = (end - start) / datetime.timedelta(hours=1)
         dh = start
-        while dh <= end and dh <= now:
+        while dh <= end:
             self.generate_yearly_accumulation_at_datetime(total_count, dh, end)
             dh += datetime.timedelta(hours=1)
 
-        if dh > now:
-            print("IN THE FUTURE", dh, now)
+
+class TestCalcYearlyAcc(CalcYearlyAcc):
+
+    def __init__(self, now: datetime.datetime):
+        self.fixed_now = now
+
+    def now(self) -> datetime.datetime:
+        return self.fixed_now
 
 
 def main():
@@ -157,4 +199,5 @@ def main():
 
 
 if __name__ == "__main__":
+    configure_logging()
     main()
